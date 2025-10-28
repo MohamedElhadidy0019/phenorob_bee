@@ -212,10 +212,10 @@ def process_video_with_rfdetr(video_path, output_folder, tile_size, model, conf_
 
     # Create output directories
     video_output_folder = os.path.join(output_folder, video_name)
-    tile_output_folder = os.path.join(video_output_folder, "tiles")
-    frames_output_folder = os.path.join(video_output_folder, "frames")
-    os.makedirs(tile_output_folder, exist_ok=True)
-    os.makedirs(frames_output_folder, exist_ok=True)
+    tile_images_folder = os.path.join(video_output_folder, "tiles", "images")
+    tile_labels_folder = os.path.join(video_output_folder, "tiles", "labels")
+    os.makedirs(tile_images_folder, exist_ok=True)
+    os.makedirs(tile_labels_folder, exist_ok=True)
 
     # Extract frames from video
     frames = extract_frames_from_video(video_path, fps=fps)
@@ -228,45 +228,23 @@ def process_video_with_rfdetr(video_path, output_folder, tile_size, model, conf_
     for frame_num, frame in tqdm(frames, desc=f"Processing {video_name}"):
         # Use overlapping tiles to better handle boundary cases
         tiles = tile_frame(frame, tile_size, overlap=overlap)
-        full_img_boxes = []
-
-        # Store tile metadata for reconstruction
-        tile_metadata = []
 
         for tile, row, col, x_off, y_off in tiles:
+            # Naming scheme: {video_name}_frame{frame_num:06d}_tile_r{row}_c{col}.jpg
+            tile_filename = f"{video_name}_frame{frame_num:06d}_tile_r{row:03d}_c{col:03d}.jpg"
+            tile_image_path = os.path.join(tile_images_folder, tile_filename)
+            tile_label_path = os.path.join(tile_labels_folder, tile_filename.replace(".jpg", ".txt"))
+
+            # Save raw tile (without bounding boxes)
+            cv2.imwrite(tile_image_path, tile)
+
+            # Run inference
             pil_tile = Image.fromarray(cv2.cvtColor(tile, cv2.COLOR_BGR2RGB))
             pred = model.predict(pil_tile, threshold=conf_threshold)
 
+            # Save tile-level YOLO format annotation only if detections exist
             if len(pred.xyxy) > 0:
-                # Naming scheme: {video_name}_frame{frame_num:06d}_tile_r{row}_c{col}.jpg
-                tile_filename = f"{video_name}_frame{frame_num:06d}_tile_r{row:03d}_c{col:03d}.jpg"
-                tile_path = os.path.join(tile_output_folder, tile_filename)
-
-                # Draw boxes on tile for visualization
-                tile_with_boxes = tile.copy()
-                for box, cls_id, conf in zip(pred.xyxy, pred.class_id, pred.confidence):
-                    if conf >= conf_threshold:
-                        x1, y1, x2, y2 = map(int, box)
-                        cv2.rectangle(tile_with_boxes, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                        cv2.putText(tile_with_boxes, f"{int(cls_id)}:{conf:.2f}",
-                                  (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
-
-                cv2.imwrite(tile_path, tile_with_boxes)
-
-                # Save tile metadata
-                tile_metadata.append({
-                    'filename': tile_filename,
-                    'row': row,
-                    'col': col,
-                    'x_offset': x_off,
-                    'y_offset': y_off,
-                    'width': tile.shape[1],
-                    'height': tile.shape[0]
-                })
-
-                # Save tile-level YOLO format annotation
-                ann_path = tile_path.replace(".jpg", ".txt")
-                with open(ann_path, "w") as f:
+                with open(tile_label_path, "w") as f:
                     for box, cls_id, conf in zip(pred.xyxy, pred.class_id, pred.confidence):
                         if conf >= conf_threshold:
                             x1, y1, x2, y2 = box
@@ -281,72 +259,6 @@ def process_video_with_rfdetr(video_path, output_folder, tile_size, model, conf_
                             h_n = h / tile.shape[0]
 
                             f.write(f"{int(cls_id)} {x_center_n:.6f} {y_center_n:.6f} {w_n:.6f} {h_n:.6f}\n")
-
-                            # Convert to full image coordinates
-                            abs_x_center = x_center + x_off
-                            abs_y_center = y_center + y_off
-                            abs_w = w
-                            abs_h = h
-
-                            x1_full = int(abs_x_center - abs_w / 2)
-                            y1_full = int(abs_y_center - abs_h / 2)
-                            x2_full = int(abs_x_center + abs_w / 2)
-                            y2_full = int(abs_y_center + abs_h / 2)
-
-                            # Clamp to image boundaries
-                            x1_full = max(0, min(x1_full, frame.shape[1] - 1))
-                            y1_full = max(0, min(y1_full, frame.shape[0] - 1))
-                            x2_full = max(0, min(x2_full, frame.shape[1] - 1))
-                            y2_full = max(0, min(y2_full, frame.shape[0] - 1))
-
-                            full_img_boxes.append((x1_full, y1_full, x2_full, y2_full, int(cls_id), float(conf)))
-
-        # Save tile metadata for frame reconstruction
-        if tile_metadata:
-            metadata_path = os.path.join(frames_output_folder, f"{video_name}_frame{frame_num:06d}_tile_metadata.txt")
-            with open(metadata_path, "w") as f:
-                f.write("# Tile metadata for frame reconstruction\n")
-                f.write("# Format: filename, row, col, x_offset, y_offset, width, height\n")
-                for meta in tile_metadata:
-                    f.write(f"{meta['filename']}, {meta['row']}, {meta['col']}, {meta['x_offset']}, {meta['y_offset']}, {meta['width']}, {meta['height']}\n")
-
-        # Apply improved box merging and save full frame results
-        if full_img_boxes:
-            merged_boxes = non_max_suppression_custom(full_img_boxes, iou_threshold=0.2)
-
-            # Draw merged boxes on full frame
-            frame_with_boxes = frame.copy()
-            for box in merged_boxes:
-                x1, y1, x2, y2 = map(int, box[:4])
-                cls = int(box[4]) if len(box) > 4 else 0
-                conf = box[5] if len(box) > 5 else 1.0
-
-                cv2.rectangle(frame_with_boxes, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                cv2.putText(frame_with_boxes, f"{cls}:{conf:.2f}", (x1, y1 - 5),
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-
-            frame_out = os.path.join(frames_output_folder, f"{video_name}_frame{frame_num:06d}.jpg")
-            cv2.imwrite(frame_out, frame_with_boxes)
-
-            # Save merged annotations in YOLO format
-            ann_out = os.path.join(frames_output_folder, f"{video_name}_frame{frame_num:06d}.txt")
-            with open(ann_out, "w") as f:
-                for box in merged_boxes:
-                    x1, y1, x2, y2 = box[:4]
-                    cls = int(box[4]) if len(box) > 4 else 0
-
-                    # Convert to YOLO format
-                    w = x2 - x1
-                    h = y2 - y1
-                    x_center = x1 + w / 2
-                    y_center = y1 + h / 2
-
-                    x_center_n = x_center / frame.shape[1]
-                    y_center_n = y_center / frame.shape[0]
-                    w_n = w / frame.shape[1]
-                    h_n = h / frame.shape[0]
-
-                    f.write(f"{cls} {x_center_n:.6f} {y_center_n:.6f} {w_n:.6f} {h_n:.6f}\n")
 
 # ----------------------------
 # Find all videos in folder structure
