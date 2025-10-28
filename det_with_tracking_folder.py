@@ -357,21 +357,24 @@ def process_video_folder(input_folder, output_folder, model_path, conf_threshold
     """
     # Create output directory
     os.makedirs(output_folder, exist_ok=True)
-    
+
     # Supported video extensions
-    video_extensions = ['*.mp4', '*.avi', '*.mov', '*.mkv', '*.wmv', '*.flv', '*.webm']
-    
-    # Find all video files
+    video_extensions = ['mp4', 'avi', 'mov', 'mkv', 'wmv', 'flv', 'webm']
+
+    # Find all video files recursively
     video_files = []
-    for ext in video_extensions:
-        video_files.extend(glob.glob(os.path.join(input_folder, ext)))
-        video_files.extend(glob.glob(os.path.join(input_folder, ext.upper())))
-    
+    for root, dirs, files in os.walk(input_folder):
+        for file in files:
+            # Check if file has a video extension (case-insensitive)
+            if any(file.lower().endswith(f'.{ext}') for ext in video_extensions):
+                video_files.append(os.path.join(root, file))
+
     if not video_files:
-        print(f"No video files found in {input_folder}")
+        print(f"No video files found in {input_folder} or its subdirectories")
         return
-    
     print(f"Found {len(video_files)} video files to process")
+    # print names of video files
+    print(f"Video files {video_files}")
     
     # Initialize tracker once for all videos - this is the expensive operation
     print("🔄 Initializing model (this may take a moment)...")
@@ -443,8 +446,8 @@ def process_video_folder(input_folder, output_folder, model_path, conf_threshold
 def main():
     """Main function with updated parameters"""
     # Configuration parameters
-    input_folder = "/scratch/s52melba/videos"  # Folder containing videos
-    output_folder = "/scratch/s52melba/videos_tracking_output"  # Folder for JSON outputs
+    input_folder = "/datan/bee_data/video_records_2024"  # Folder containing videos
+    output_folder = "/scratch/s52melba/videos_tracking_output_2024"  # Folder for JSON outputs
     model_path = "/scratch/s52melba/detr_train_2/checkpoint_best_total.pth"
     
     # Detection and tracking parameters
@@ -452,7 +455,7 @@ def main():
     distance_threshold = 90      # Max pixel distance for track matching
     hit_counter_max = 10         # Max frames to keep track alive without detection
     initialization_delay = 5     # Frames to wait before confirming new track
-    batch_size = 32              # Number of frames to process in batch (adjust based on GPU memory)
+    batch_size = 256              # Number of frames to process in batch (adjust based on GPU memory)
     
     # Check if input folder exists
     if not os.path.exists(input_folder):
