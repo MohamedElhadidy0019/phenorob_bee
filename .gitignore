@@ -4,3 +4,5 @@ detr_output/checkpoint_best_ema.pth
 detr_output/checkpoint_best_regular.pth
 detr_output/events.out.tfevents.1757768272.chest.itg.uni-bonn.de.49636.0
 detr_output/log.txt
+data_24_tiled/images/
+
